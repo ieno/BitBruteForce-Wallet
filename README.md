@@ -1,36 +1,22 @@
-# BitBruteForce-Wallet
-This is an effective script to Brute Force, the Private Key of any Bitcoin Public Address.
+# What is this?
+This is an update to a BTC private key brute force script found [here](https://github.com/Xefrok/BitBruteForce-Wallet). This script tries to improve upon it by using an in-memory DataFrame.
 
-How does the script work? 
-Very easy.
+# How does the script work?
+It uses the same method of approach found in the [original script](https://github.com/Xefrok/BitBruteForce-Wallet), except instead of looping through a text file containing all the addresses, it uses a Pandas DataFrame where each individual address is the key.
+To add to this, it also allows you to download the latest list of addresses from the [Bitcoin Address Database](https://bitkeys.work/) and use that as a starting point.
 
-Every code I´ve seen for the last year just generates randomly private and public addresses and checks the balance (very, very slow for the API Request).
+# Speed
+This script was tested on a 5th gen Ryzen CPU, and when using 6 processes on a list containing ~147,000 addresses it reached ~850 keys per second, per process. Adding these 6 processes up, this amounts to approximately 5,100 keys/sec total => 18,360,000 keys/hour => 440,640,000 keys/day => ~160,833,600,000 keys/year. Be aware though that the amount of keys/sec is heavily dependant on both your CPU's power and the size of the address list being used and decreases as the list increases.
 
-So, i found **123,000 Bitcoin Addresses** with 1+ BTC from 2009 to 2013 and NEVER made a transaction, therefore, lost BTC... it is just like huge pirate boats in the bottom of the ocean filled with treasures.
+# Does it work?
+Supposedly. However, chances of finding the private key belonging to an address on any list are **EXTREMELY** small. If you do however achieve the impossible and find one, please be mindful of it's actual owner and don't steal their money (unless you are **absolutely 100% certain** the wallet is dead).
 
-This Script creates randomly private and public addresses without checking the balance, instead of making API Request, the created Public Address is compared with the list I own.
+# If you like it
+**bc1qj49ruupswqg3ulc3jx4gfcydnwdvmy8lffhlqf**
 
-Long story short. 
-Create Random Public Address (**RPA**) and check one by one with the Public Address (**PA**) at the list.
-
-**if RPC == PA then
-	YOU WINNED THE LOTTREY!
-else
-	KEEP SEARCHING MTF!**
-	
-(Script tested on i7-4500U 8 Cores - 16.32 K/s per Core. 11,280,384 Private Keys generated per day)
-
-i think is quite simple.
-
-If you like it!! **1KyQXpa1Zke5v94QZV2U77i7oaVwPTijdY**
-
-
-REQUERIMENTS
-=
-
- - Python 3.x (i use 3.6.5)
- - pip install ecdsa
- - pip install base58
- - pip install pandas  (If error "pip uninstall numpy" then "pip install numpy==1.19.3")
- - 3,000,000,000 Years
-
+# Requirements
+- Python 3.x
+- pip install ecdsa
+- pip install base58
+- pip install pandas
+- 3,000,000,000 Years
