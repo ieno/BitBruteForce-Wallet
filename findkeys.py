@@ -26,6 +26,32 @@ def ripemd160(x):
     return d
 
 
+def ecdsa_priv_key():
+    # generate private key , uncompressed WIF starts with "5"
+    priv_key = os.urandom(32)
+    return priv_key
+  
+
+def ecdsa_pub_key(priv_key):
+    # get public key , uncompressed address starts with "1"
+    sk = ecdsa.SigningKey.from_string(priv_key, curve=ecdsa.SECP256k1)
+    vk = sk.get_verifying_key()
+    publ_key = '04' + binascii.hexlify(vk.to_string()).decode()
+    hash160 = ripemd160(hashlib.sha256(binascii.unhexlify(publ_key)).digest()).digest()
+    publ_addr_a = b"\x00" + hash160
+    checksum = hashlib.sha256(hashlib.sha256(publ_addr_a).digest()).digest()[:4]
+    publ_addr_b = base58.b58encode(publ_addr_a + checksum)
+    return publ_addr_b.decode()
+
+
+def ecdsa_wif(priv_key):
+    fullkey = '80' + binascii.hexlify(priv_key).decode()
+    sha256a = hashlib.sha256(binascii.unhexlify(fullkey)).hexdigest()
+    sha256b = hashlib.sha256(binascii.unhexlify(sha256a)).hexdigest()
+    WIF = base58.b58encode(binascii.unhexlify(fullkey+sha256b[:8]))
+    return WIF.decode()
+
+
 def seek(process, df):
     global processes
     file_out = 'btc_keys'
@@ -36,55 +62,45 @@ def seek(process, df):
 
     while True:
         i += 1
-        # generate private key , uncompressed WIF starts with "5"
-        priv_key = os.urandom(32)
-        fullkey = '80' + binascii.hexlify(priv_key).decode()
-        sha256a = hashlib.sha256(binascii.unhexlify(fullkey)).hexdigest()
-        sha256b = hashlib.sha256(binascii.unhexlify(sha256a)).hexdigest()
-        WIF = base58.b58encode(binascii.unhexlify(fullkey+sha256b[:8]))
 
-        # get public key , uncompressed address starts with "1"
-        sk = ecdsa.SigningKey.from_string(priv_key, curve=ecdsa.SECP256k1)
-        vk = sk.get_verifying_key()
-        publ_key = '04' + binascii.hexlify(vk.to_string()).decode()
-        hash160 = ripemd160(hashlib.sha256(binascii.unhexlify(publ_key)).digest()).digest()
-        publ_addr_a = b"\x00" + hash160
-        checksum = hashlib.sha256(hashlib.sha256(publ_addr_a).digest()).digest()[:4]
-        publ_addr_b = base58.b58encode(publ_addr_a + checksum)
-        priv = WIF.decode()
-        pub = publ_addr_b.decode()
+        priv_key = ecdsa_priv_key()
+        pub_key = ecdsa_pub_key(priv_key)
 
         time_diff = dt.datetime.today().timestamp() - start_time
         timestamp = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         if (i % LOG_EVERY_N) == 0:
             print(f"{timestamp} - ~{(i/time_diff)*processes:,.2f} keys/sec, ~{i*processes:,.0f} keys tested", end='\r')
-        #print(f"Worker {process}: {i} [ {pub} - {priv} ]")
 
-        if pub in df.index.values:
-            balance = df.loc[pub].balance
-            print(f"\n{timestamp} - !!!!! Private key found for {pub}: {priv} [balance: {balance}] !!!!!\n")
+        #wif = ecdsa_wif(priv_key)
+        #print(f"Worker {process}: {i} [ {pub_key} - {wif} ]")
+
+        if pub_key in df.index.values:
+            balance = df.loc[pub_key].balance
+            wif = ecdsa_wif(priv_key)
+            print(f"\n{timestamp} - !!!!! Private key found for {pub_key}: {wif} [balance: {balance}] !!!!!\n")
             f = open(file_out, 'a')
-            f.write(f"{pub}: {priv}")
+            f.write(f"{pub_key}: {wif}")
             f.close()
 
 
 if __name__ == '__main__':
     global processes
     processes = 12
-    file_url = 'https://bitkeys.work/btc_balance_sorted.csv'
+    file_url = 'http://addresses.loyce.club/blockchair_bitcoin_addresses_and_balance_LATEST.tsv.gz'
+    known_wallets_gzip = 'btc_balance_sorted.tsv.gz'
     known_wallets = 'btc_balance_sorted.csv'
     cleaned_wallets = 'btc_balance_sorted_clean.csv'
-    min_balance = 100000000
+    min_balance = 100000000 # 100000000 = 1 BTC
 
     file_info = urllib.request.urlopen(file_url)
     download_list = input(f"Would you like to download the most recent list of known bitcoin addresses with a non-zero balance ({file_info.length/1024/1024:,.2f} MB)? [y/n] ")
-    if download_list.lower() == 'yes' or download_list.lower() == 'y' or (not os.path.exists(known_wallets) and not os.path.exists(cleaned_wallets)):
-        print(f"Downloading latest wallet list from https://bitkeys.work/")
-        urllib.request.urlretrieve(file_url, known_wallets, reporthook)
-        print(f"\nCompleted, list saved as {known_wallets}")
+    if download_list.lower() == 'yes' or download_list.lower() == 'y' or (not os.path.exists(known_wallets_gzip) and not os.path.exists(cleaned_wallets)):
+        print(f"Downloading latest wallet list from {file_url}")
+        urllib.request.urlretrieve(file_url, known_wallets_gzip, reporthook)
+        print(f"\nCompleted, list saved as {known_wallets_gzip}")
 
     if os.path.exists(cleaned_wallets):
-        if not os.path.exists(known_wallets):
+        if not os.path.exists(known_wallets_gzip):
             use_existing_data = 'yes'
         else:
             use_existing_data = input(f"Existing wallet file found, would you like to use it? [y/n] ")
@@ -95,7 +111,7 @@ if __name__ == '__main__':
     if use_existing_data.lower() == 'yes' or use_existing_data.lower() == 'y':
         df = pd.read_csv(cleaned_wallets, sep=',', index_col='address')
     else:
-        df = pd.read_csv(known_wallets, sep=',', index_col='address')
+        df = pd.read_csv(known_wallets_gzip, compression='gzip', sep='\t', index_col='address')
 
     # Filter out multisig and low balance wallets
     print(f"Cleaning up data, min. balance: {min_balance:,.0f} satoshi ({min_balance/100000000:,} BTC)...")
