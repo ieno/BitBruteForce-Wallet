@@ -2,10 +2,17 @@
 import time
 import datetime as dt
 import os
+import sys
 from multiprocessing import Process
-import binascii, hashlib, base58, ecdsa
+import binascii, hashlib, base58
 import pandas as pd
 import urllib.request
+
+try:
+    from fastecdsa import keys, curve
+except ImportError:
+    print(f'Failed to import fastecdsa, falling back to ecdsa...')
+    import ecdsa
 
 
 def reporthook(count, block_size, total_size):
@@ -27,29 +34,61 @@ def ripemd160(x):
 
 
 def ecdsa_priv_key():
-    # generate private key , uncompressed WIF starts with "5"
-    priv_key = os.urandom(32)
-    return priv_key
-  
+    return os.urandom(32)
 
-def ecdsa_pub_key(priv_key):
-    # get public key , uncompressed address starts with "1"
-    sk = ecdsa.SigningKey.from_string(priv_key, curve=ecdsa.SECP256k1)
+
+def ecdsa_pub_key(private_key):
+    sk = ecdsa.SigningKey.from_string(private_key, curve=ecdsa.SECP256k1)
     vk = sk.get_verifying_key()
     publ_key = '04' + binascii.hexlify(vk.to_string()).decode()
-    hash160 = ripemd160(hashlib.sha256(binascii.unhexlify(publ_key)).digest()).digest()
+    return publ_key
+
+
+def ecdsa_address(public_key):
+    hash160 = ripemd160(hashlib.sha256(binascii.unhexlify(public_key)).digest()).digest()
     publ_addr_a = b"\x00" + hash160
     checksum = hashlib.sha256(hashlib.sha256(publ_addr_a).digest()).digest()[:4]
     publ_addr_b = base58.b58encode(publ_addr_a + checksum)
     return publ_addr_b.decode()
 
 
-def ecdsa_wif(priv_key):
-    fullkey = '80' + binascii.hexlify(priv_key).decode()
+def ecdsa_wif(private_key):
+    fullkey = '80' + binascii.hexlify(private_key).decode()
     sha256a = hashlib.sha256(binascii.unhexlify(fullkey)).hexdigest()
     sha256b = hashlib.sha256(binascii.unhexlify(sha256a)).hexdigest()
     WIF = base58.b58encode(binascii.unhexlify(fullkey+sha256b[:8]))
     return WIF.decode()
+
+
+def fastecdsa_priv_key():
+    return binascii.hexlify(os.urandom(32)).decode('utf-8').upper()
+
+
+def fastecdsa_pub_key(private_key):
+    """Accept a hex private key and convert it to its respective public key. Because converting a private key to
+    a public key requires SECP256k1 ECDSA signing, this function is the most time consuming and is a bottleneck
+    in the overall speed of the program.
+    """
+    # get the public key corresponding to the private key we just generated
+    c = int('0x%s'%private_key,0)
+    d = keys.get_public_key(c, curve.secp256k1)
+    return '04%s%s'%('{0:064x}'.format(int(d.x)), '{0:064x}'.format(int(d.y)))
+
+
+def fastecdsa_address(public_key):
+    #Accept a public key and convert it to its resepective P2PKH wallet address.
+    #print('Wanting to [%s] this to address'%public_key)
+    output = []; alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+    var = hashlib.new('ripemd160')
+    var.update(hashlib.sha256(binascii.unhexlify(public_key.encode())).digest())
+    var = '00' + var.hexdigest() + hashlib.sha256(hashlib.sha256(binascii.unhexlify(('00' + var.hexdigest()).encode())).digest()).hexdigest()[0:8]
+    count = [char != '0' for char in var].index(True) // 2
+    n = int(var, 16)
+    while n > 0:
+        n, remainder = divmod(n, 58)
+        output.append(alphabet[remainder])
+    for i in range(count): output.append(alphabet[0])
+    return ''.join(output[::-1])
 
 
 def seek(process, df):
@@ -63,8 +102,14 @@ def seek(process, df):
     while True:
         i += 1
 
-        priv_key = ecdsa_priv_key()
-        pub_key = ecdsa_pub_key(priv_key)
+        if use_fastecdsa:
+            priv_key = fastecdsa_priv_key()
+            pub_key = fastecdsa_pub_key(priv_key)
+            address = fastecdsa_address(pub_key)
+        else:
+            priv_key = ecdsa_priv_key()
+            pub_key = ecdsa_pub_key(priv_key)
+            address = ecdsa_address(pub_key)
 
         time_diff = dt.datetime.today().timestamp() - start_time
         timestamp = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -74,12 +119,16 @@ def seek(process, df):
         #wif = ecdsa_wif(priv_key)
         #print(f"Worker {process}: {i} [ {pub_key} - {wif} ]")
 
-        if pub_key in df.index.values:
-            balance = df.loc[pub_key].balance
-            wif = ecdsa_wif(priv_key)
-            print(f"\n{timestamp} - !!!!! Private key found for {pub_key}: {wif} [balance: {balance}] !!!!!\n")
+        if address in df.index.values:
+            if use_fastecdsa:
+                private_key = priv_key
+            else:
+                private_key = ecdsa_wif(priv_key)
+
+            balance = df.loc[address].balance
+            print(f"\n{timestamp} - !!!!! Private key found for {address}: {private_key} [balance: {balance}] !!!!!\n")
             f = open(file_out, 'a')
-            f.write(f"{pub_key}: {wif}")
+            f.write(f"{address}: {private_key}")
             f.close()
 
 
@@ -119,6 +168,10 @@ if __name__ == '__main__':
     df = df[df['balance'] >= min_balance]
     df.to_csv(cleaned_wallets)
     print(f"Found {df.size:,.0f} eligble addresses, starting up {processes} processes...")
+    if all(x in sys.modules for x in ['fastecdsa.keys', 'fastecdsa.curve']):
+        use_fastecdsa = True
+    else:
+        use_fastecdsa = False
 
     for process in range(processes):
         p = Process(target=seek, args=(process, df))
