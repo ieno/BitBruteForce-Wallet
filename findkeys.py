@@ -190,8 +190,9 @@ if __name__ == '__main__':
     for process in range(processes):
         if os.path.exists(known_wallets_txt):
             addr_lines = open(known_wallets_txt).readlines()
-            addr_lines.sort()
-            addr_set = set(addr_lines)
+            addr_lines_clean = [addr_line.strip() for addr_line in addr_lines]
+            addr_lines_clean.sort()
+            addr_set = set(addr_lines_clean)
 
             p = Process(target=seek, args=(process, addr_set, False))
             p.start()
