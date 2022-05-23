@@ -2,9 +2,11 @@
 import time
 import datetime as dt
 import os
-import sys
-from multiprocessing import Process
+import sys, getopt
+from multiprocessing import cpu_count, Value, Lock, Process
+from ctypes import c_int
 import binascii, hashlib, base58
+import ecdsa
 import pandas as pd
 import numpy as np
 import urllib.request
@@ -13,14 +15,20 @@ try:
     from fastecdsa import keys, curve
 except ImportError:
     print(f'Failed to import fastecdsa, falling back to ecdsa...')
-    import ecdsa
+
+
+def increment():
+    with counter_lock:
+        counter.value += 1
 
 
 def reporthook(count, block_size, total_size):
     global start_time
+
     if count == 0:
         start_time = time.time()
         return
+
     duration = time.time() - start_time
     progress_size = int(count * block_size)
     speed = int(progress_size / (1024 * duration))
@@ -92,16 +100,18 @@ def fastecdsa_address(public_key):
     return ''.join(output[::-1])
 
 
-def seek(process, df, isdataframe):
+def seek(process, df, isdataframe, use_fastecdsa):
     global processes
+    global counter
+    global counter_lock
+
     file_out = 'btc_keys'
     LOG_EVERY_N = 1000
     start_time = dt.datetime.today().timestamp()
-    i = 0
     print(f"Process {process}: searching for keys...")
 
     while True:
-        i += 1
+        increment()
 
         if use_fastecdsa:
             priv_key = fastecdsa_priv_key()
@@ -114,43 +124,72 @@ def seek(process, df, isdataframe):
 
         time_diff = dt.datetime.today().timestamp() - start_time
         timestamp = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        if (i % LOG_EVERY_N) == 0:
-            print(f"{timestamp} - ~{(i/time_diff)*processes:,.2f} keys/sec, ~{i*processes:,.0f} keys tested", end='\r')
+        if (counter.value % LOG_EVERY_N) == 0:
+            print(f"{timestamp} - {(counter.value/time_diff):,.2f} keys/sec, {counter.value:,.0f} keys tested", end='\r')
 
-        if isdataframe:
-            if address in df.index.values:
-                if use_fastecdsa:
-                    private_key = priv_key
-                else:
-                    private_key = ecdsa_wif(priv_key)
+        if address != -1:
+            if isdataframe:
+                if address in df.index.values:
+                    if use_fastecdsa:
+                        private_key = priv_key
+                    else:
+                        private_key = ecdsa_wif(priv_key)
 
-                balance = df.loc[address].balance
-                print(f"\n{timestamp} - !!!!! Private key found for {address}: {private_key} [balance: {balance}] !!!!!\n")
-                f = open(file_out, 'a')
-                f.write(f"{address}: {private_key}")
-                f.close()
-        else:
-            if address in df:
-                if use_fastecdsa:
-                    private_key = priv_key
-                else:
-                    private_key = ecdsa_wif(priv_key)
+                    balance = df.loc[address].balance
+                    print(f"\n{timestamp} - !!!!! Private key found for {address}: {private_key} [balance: {balance}] !!!!!\n")
+                    f = open(file_out, 'a')
+                    f.write(f"{address}: {private_key}")
+                    f.close()
+            else:
+                if address in df:
+                    if use_fastecdsa:
+                        private_key = priv_key
+                    else:
+                        private_key = ecdsa_wif(priv_key)
 
-                print(f"\n{timestamp} - !!!!! Private key found for {address}: {private_key} !!!!!\n")
-                f = open(file_out, 'a')
-                f.write(f"{address}: {private_key}")
-                f.close()
+                    print(f"\n{timestamp} - !!!!! Private key found for {address}: {private_key} !!!!!\n")
+                    f = open(file_out, 'a')
+                    f.write(f"{address}: {private_key}")
+                    f.close()
 
 
-if __name__ == '__main__':
+def main(argv):
     global processes
-    processes = 12
+    global counter
+    global counter_lock
+
+    processes = cpu_count()
+    counter = Value(c_int)
+    counter_lock = Lock()
+    use_fastecdsa = False
+    use_dataframe = False
+
     file_url = 'http://addresses.loyce.club/blockchair_bitcoin_addresses_and_balance_LATEST.tsv.gz'
     known_wallets_gzip = 'btc_balance_sorted.tsv.gz'
     known_wallets = 'btc_balance_sorted.csv'
     known_wallets_txt = 'btc_addresses.txt'
     cleaned_wallets = 'btc_balance_sorted_clean.csv'
     min_balance = 100000000 # 100000000 = 1 BTC
+
+    try:
+        opts, args = getopt.getopt(argv, 'b:dfp:', ['balance=', 'dataframe', 'fast', 'proc='])
+    except getopt.GetopsError as err:
+        print(f'{err}')
+        sys.exit(2)
+
+    for opt, arg in opts:
+        if opt in ('-b', '--balance'):
+            print(f'Bottom treshold: {arg} satoshi')
+            min_balance = int(arg)
+        elif opt in ('-d', '--dataframe'):
+            print(f'Using DataFrame')
+            use_dataframe = True
+        elif opt in ('-f', '--fast'):
+            print(f'Using fastecdsa')
+            use_fastecdsa = True
+        elif opt in ('-p', '--proc'):
+            print(f'Using {arg} threads')
+            processes = int(arg)
 
     file_info = urllib.request.urlopen(file_url)
     download_list = input(f"Would you like to download the most recent list of known bitcoin addresses with a non-zero balance ({file_info.length/1024/1024:,.2f} MB)? [y/n] ")
@@ -179,13 +218,15 @@ if __name__ == '__main__':
     df = df[df['balance'] >= min_balance]
     df.to_csv(cleaned_wallets)
     print(f"Found {df.size:,.0f} eligble addresses, starting up {processes} processes...")
-    if all(x in sys.modules for x in ['fastecdsa.keys', 'fastecdsa.curve']):
+
+    if use_fastecdsa and all(x in sys.modules for x in ['fastecdsa.keys', 'fastecdsa.curve']):
         use_fastecdsa = True
     else:
         use_fastecdsa = False
 
     # Save addresses to known_wallets_txt
-    np.savetxt(known_wallets_txt, df.index, fmt='%s')
+    if not use_dataframe:
+        np.savetxt(known_wallets_txt, df.index, fmt='%s')
 
     for process in range(processes):
         if os.path.exists(known_wallets_txt):
@@ -194,8 +235,12 @@ if __name__ == '__main__':
             addr_lines_clean.sort()
             addr_set = set(addr_lines_clean)
 
-            p = Process(target=seek, args=(process, addr_set, False))
+            p = Process(target=seek, args=(process, addr_set, use_dataframe, use_fastecdsa))
             p.start()
         else:
-            p = Process(target=seek, args=(process, df, True))
+            p = Process(target=seek, args=(process, df, use_dataframe, use_fastecdsa))
             p.start()
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])
