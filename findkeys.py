@@ -6,6 +6,7 @@ import sys
 from multiprocessing import Process
 import binascii, hashlib, base58
 import pandas as pd
+import numpy as np
 import urllib.request
 
 try:
@@ -91,7 +92,7 @@ def fastecdsa_address(public_key):
     return ''.join(output[::-1])
 
 
-def seek(process, df):
+def seek(process, df, isdataframe):
     global processes
     file_out = 'btc_keys'
     LOG_EVERY_N = 1000
@@ -116,20 +117,29 @@ def seek(process, df):
         if (i % LOG_EVERY_N) == 0:
             print(f"{timestamp} - ~{(i/time_diff)*processes:,.2f} keys/sec, ~{i*processes:,.0f} keys tested", end='\r')
 
-        #wif = ecdsa_wif(priv_key)
-        #print(f"Worker {process}: {i} [ {pub_key} - {wif} ]")
+        if isdataframe:
+            if address in df.index.values:
+                if use_fastecdsa:
+                    private_key = priv_key
+                else:
+                    private_key = ecdsa_wif(priv_key)
 
-        if address in df.index.values:
-            if use_fastecdsa:
-                private_key = priv_key
-            else:
-                private_key = ecdsa_wif(priv_key)
+                balance = df.loc[address].balance
+                print(f"\n{timestamp} - !!!!! Private key found for {address}: {private_key} [balance: {balance}] !!!!!\n")
+                f = open(file_out, 'a')
+                f.write(f"{address}: {private_key}")
+                f.close()
+        else:
+            if address in df:
+                if use_fastecdsa:
+                    private_key = priv_key
+                else:
+                    private_key = ecdsa_wif(priv_key)
 
-            balance = df.loc[address].balance
-            print(f"\n{timestamp} - !!!!! Private key found for {address}: {private_key} [balance: {balance}] !!!!!\n")
-            f = open(file_out, 'a')
-            f.write(f"{address}: {private_key}")
-            f.close()
+                print(f"\n{timestamp} - !!!!! Private key found for {address}: {private_key} !!!!!\n")
+                f = open(file_out, 'a')
+                f.write(f"{address}: {private_key}")
+                f.close()
 
 
 if __name__ == '__main__':
@@ -138,6 +148,7 @@ if __name__ == '__main__':
     file_url = 'http://addresses.loyce.club/blockchair_bitcoin_addresses_and_balance_LATEST.tsv.gz'
     known_wallets_gzip = 'btc_balance_sorted.tsv.gz'
     known_wallets = 'btc_balance_sorted.csv'
+    known_wallets_txt = 'btc_addresses.txt'
     cleaned_wallets = 'btc_balance_sorted_clean.csv'
     min_balance = 100000000 # 100000000 = 1 BTC
 
@@ -173,6 +184,17 @@ if __name__ == '__main__':
     else:
         use_fastecdsa = False
 
+    # Save addresses to known_wallets_txt
+    np.savetxt(known_wallets_txt, df.index, fmt='%s')
+
     for process in range(processes):
-        p = Process(target=seek, args=(process, df))
-        p.start()
+        if os.path.exists(known_wallets_txt):
+            addr_lines = open(known_wallets_txt).readlines()
+            addr_lines.sort()
+            addr_set = set(addr_lines)
+
+            p = Process(target=seek, args=(process, addr_set, False))
+            p.start()
+        else:
+            p = Process(target=seek, args=(process, df, True))
+            p.start()
